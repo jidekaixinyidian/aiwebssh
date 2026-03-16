@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WebSSH - Terminal & AI Assistant</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<!-- xterm.js -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<!-- Socket.IO -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: { primary: '#6751a4' },
+        fontFamily: {
+          display: ['Inter', 'sans-serif'],
+          mono: ['JetBrains Mono', 'monospace']
+        },
+        borderRadius: { DEFAULT: '1rem', lg: '2rem', xl: '3rem', full: '9999px' }
+      }
+    }
+  }
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; }
+  .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e1e6; border-radius: 10px; }
+  /* xterm容器 */
+  #terminal-container {
+    width: 100%;
+    height: 100%;
+    background: #1a1b26;
+    padding: 8px;
+    box-sizing: border-box;
+  }
+  #terminal-container .xterm { height: 100%; }
+  #terminal-container .xterm-viewport { overflow-y: auto !important; }
+  /* 模态框 */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 50;
+  }
+  .modal-overlay.hidden { display: none; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-900 overflow-hidden h-screen flex flex-col">
+
+<!-- Top Navigation -->
+<header class="flex h-14 items-center justify-between border-b border-purple-100 bg-white px-5 shrink-0 shadow-sm">
+  <div class="flex items-center gap-4">
+    <div class="flex items-center gap-2 text-purple-700">
+      <span class="material-symbols-outlined text-2xl">terminal</span>
+      <h1 class="font-bold text-lg tracking-tight">WebSSH</h1>
+    </div>
+    <div class="h-6 w-px bg-slate-200"></div>
+    <div id="header-status" class="flex items-center gap-2 text-sm text-slate-500">
+      <div id="status-dot" class="h-2 w-2 rounded-full bg-slate-300"></div>
+      <span id="status-text">未连接</span>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <button id="btn-disconnect" onclick="doDisconnect()"
+      class="hidden items-center gap-1 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">
+      <span class="material-symbols-outlined text-sm">link_off</span> 断开
+    </button>
+    <button onclick="openConnectModal()"
+      class="flex items-center gap-1 rounded-lg bg-purple-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-purple-600">
+      <span class="material-symbols-outlined text-sm">add</span> 新建连接
+    </button>
+  </div>
+</header>
+
+<!-- Main Layout -->
+<main class="flex flex-1 overflow-hidden">
+
+  <!-- Left Sidebar: Server List -->
+  <aside class="w-56 border-r border-purple-100 bg-white flex flex-col shrink-0">
+    <div class="p-3 border-b border-purple-50">
+      <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">服务器</h3>
+    </div>
+    <div id="server-list" class="flex-1 overflow-y-auto p-2 flex flex-col gap-1 custom-scrollbar">
+      <!-- 动态填充 -->
+    </div>
+    <div class="p-3 border-t border-purple-50">
+      <button onclick="openConnectModal()"
+        class="flex w-full items-center justify-center gap-1 rounded-lg bg-purple-700 py-2 text-xs font-bold text-white hover:bg-purple-600">
+        <span class="material-symbols-outlined text-sm">add</span> 添加服务器
+      </button>
+    </div>
+  </aside>
+
+  <!-- Center: Terminal -->
+  <section class="flex-1 flex flex-col bg-[#1a1b26] overflow-hidden">
+    <!-- Terminal Toolbar -->
+    <div class="flex items-center justify-between px-4 py-2 bg-[#16172a] border-b border-white/10 shrink-0">
+      <div class="flex items-center gap-3">
+        <div class="flex gap-1.5">
+          <div class="h-3 w-3 rounded-full bg-red-500/80"></div>
+          <div class="h-3 w-3 rounded-full bg-yellow-500/80"></div>
+          <div class="h-3 w-3 rounded-full bg-green-500/80"></div>
+        </div>
+        <span id="terminal-title" class="font-mono text-xs text-white/40">未连接</span>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="clearTerminal()" title="清屏"
+          class="text-white/30 hover:text-white/70 transition-colors">
+          <span class="material-symbols-outlined text-base">clear_all</span>
+        </button>
+        <button onclick="copyTerminalSelection()" title="复制选中"
+          class="text-white/30 hover:text-white/70 transition-colors">
+          <span class="material-symbols-outlined text-base">content_copy</span>
+        </button>
+      </div>
+    </div>
+    <!-- xterm.js 容器 -->
+    <div id="terminal-container" class="flex-1 overflow-hidden"></div>
+  </section>
+
+  <!-- Right Sidebar: AI Assistant -->
+  <aside class="w-72 border-l border-purple-100 bg-white flex flex-col shrink-0">
+    <div class="p-3 border-b border-purple-50 flex items-center gap-2">
+      <span class="material-symbols-outlined text-purple-700 text-lg">auto_awesome</span>
+      <h2 class="font-bold text-sm text-slate-800">AI 助手</h2>
+    </div>
+
+    <!-- Chat Area -->
+    <div id="ai-chat" class="flex-1 overflow-y-auto p-3 flex flex-col gap-3 custom-scrollbar">
+      <div class="bg-purple-50 rounded-lg p-3">
+        <p class="text-xs text-slate-600 leading-relaxed">
+          连接服务器后，用自然语言描述操作，我会解析并执行对应命令。
+        </p>
+      </div>
+      <!-- 快捷操作 -->
+      <div class="flex flex-col gap-1.5">
+        <button onclick="quickAI('检查系统资源水位')"
+          class="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 hover:bg-purple-50 hover:border-purple-200 text-left transition-all">
+          <span class="material-symbols-outlined text-purple-700 text-base">analytics</span>
+          <span class="text-xs font-medium">检查系统资源</span>
+        </button>
+        <button onclick="quickAI('查看磁盘使用情况')"
+          class="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 hover:bg-purple-50 hover:border-purple-200 text-left transition-all">
+          <span class="material-symbols-outlined text-purple-700 text-base">storage</span>
+          <span class="text-xs font-medium">磁盘使用情况</span>
+        </button>
+        <button onclick="quickAI('查看当前运行的进程')"
+          class="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 hover:bg-purple-50 hover:border-purple-200 text-left transition-all">
+          <span class="material-symbols-outlined text-purple-700 text-base">memory</span>
+          <span class="text-xs font-medium">查看运行进程</span>
+        </button>
+        <button onclick="quickAI('查看系统日志最新内容')"
+          class="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 hover:bg-purple-50 hover:border-purple-200 text-left transition-all">
+          <span class="material-symbols-outlined text-purple-700 text-base">article</span>
+          <span class="text-xs font-medium">查看系统日志</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- AI Input -->
+    <div class="p-3 border-t border-purple-50">
+      <div class="relative">
+        <input id="ai-input" type="text"
+          placeholder="描述你想做的操作..."
+          class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 pr-10 text-xs focus:ring-2 focus:ring-purple-200 focus:border-purple-400 outline-none transition-all"/>
+        <button id="ai-send-btn" onclick="sendAI()"
+          class="absolute right-2 top-1.5 h-7 w-7 flex items-center justify-center rounded-lg text-purple-700 hover:bg-purple-100 transition-colors">
+          <span class="material-symbols-outlined text-base">send</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- Status Bar -->
+<footer class="h-7 border-t border-purple-100 bg-white px-4 flex items-center justify-between text-[10px] text-slate-400 shrink-0">
+  <div class="flex gap-4">
+    <span id="footer-host">未连接</span>
+    <span id="footer-latency"></span>
+  </div>
+  <span class="text-purple-600 font-medium">WebSSH v3.0</span>
+</footer>
+
+<!-- ─── 连接模态框 ─────────────────────────────────────────────────────────── -->
+<div id="connect-modal" class="modal-overlay hidden">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+    <div class="flex items-center justify-between p-5 border-b border-slate-100">
+      <h3 class="font-bold text-slate-800">新建 SSH 连接</h3>
+      <button onclick="closeConnectModal()" class="text-slate-400 hover:text-slate-600">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="p-5 flex flex-col gap-3">
+      <!-- 名称 -->
+      <div>
+        <label class="text-xs font-medium text-slate-600 mb-1 block">连接名称 <span class="text-slate-400 font-normal">（可选）</span></label>
+        <input id="input-name" type="text" placeholder="如: 生产服务器"
+          class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+      </div>
+      <!-- 主机 + 端口 -->
+      <div class="grid grid-cols-3 gap-3">
+        <div class="col-span-2">
+          <label class="text-xs font-medium text-slate-600 mb-1 block">主机地址</label>
+          <input id="input-host" type="text" placeholder="192.168.1.1 或 example.com"
+            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600 mb-1 block">端口</label>
+          <input id="input-port" type="number" value="22"
+            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+        </div>
+      </div>
+      <!-- 用户名 -->
+      <div>
+        <label class="text-xs font-medium text-slate-600 mb-1 block">用户名</label>
+        <input id="input-user" type="text" placeholder="root"
+          class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+      </div>
+      <!-- 密码 -->
+      <div>
+        <label class="text-xs font-medium text-slate-600 mb-1 block">密码</label>
+        <input id="input-pass" type="password" placeholder="••••••••"
+          class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+      </div>
+      <!-- 保存到列表 -->
+      <label class="flex items-center gap-2 cursor-pointer select-none">
+        <input id="input-save" type="checkbox" class="rounded border-slate-300 text-purple-600 focus:ring-purple-200"/>
+        <span class="text-sm text-slate-600">保存到服务器列表</span>
+      </label>
+      <!-- 错误提示 -->
+      <div id="connect-error" class="hidden text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2"></div>
+      <button id="connect-btn" onclick="doConnect()"
+        class="w-full rounded-xl bg-purple-700 py-2.5 text-sm font-bold text-white hover:bg-purple-600 transition-colors mt-1">
+        连接
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

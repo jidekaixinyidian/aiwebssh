@@ -1,0 +1,8 @@
+paramiko==3.4.0
+flask==3.0.0
+flask-cors==4.0.0
+flask-socketio==5.6.1
+eventlet==0.40.4
+requests==2.31.0
+python-dotenv==1.0.0
+openai
