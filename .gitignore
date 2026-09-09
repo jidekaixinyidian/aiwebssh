@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# 运行时生成的配置（含密码/密钥）
+servers.json
+models.json
+
 # Python
 __pycache__/
 *.py[cod]

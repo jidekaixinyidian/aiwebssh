@@ -131,6 +131,15 @@
     <div class="p-3 border-b border-purple-50 flex items-center gap-2">
       <span class="material-symbols-outlined text-purple-700 text-lg">auto_awesome</span>
       <h2 class="font-bold text-sm text-slate-800">AI 助手</h2>
+      <div class="flex-1"></div>
+      <select id="model-select" title="当前使用的模型"
+        class="max-w-[120px] shrink-0 rounded-lg border border-slate-200 px-1.5 py-1 text-[10px] text-slate-600 bg-white focus:ring-2 focus:ring-purple-200 outline-none disabled:opacity-50">
+        <option value="">暂无模型</option>
+      </select>
+      <button onclick="openModelModal()" title="模型管理"
+        class="shrink-0 h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-purple-700 hover:bg-purple-50 transition-colors">
+        <span class="material-symbols-outlined text-base">tune</span>
+      </button>
     </div>
 
     <!-- Chat Area -->
@@ -184,7 +193,6 @@
 <footer class="h-7 border-t border-purple-100 bg-white px-4 flex items-center justify-between text-[10px] text-slate-400 shrink-0">
   <div class="flex gap-4">
     <span id="footer-host">未连接</span>
-    <span id="footer-latency"></span>
   </div>
   <span class="text-purple-600 font-medium">WebSSH v3.0</span>
 </footer>
@@ -241,6 +249,66 @@
         class="w-full rounded-xl bg-purple-700 py-2.5 text-sm font-bold text-white hover:bg-purple-600 transition-colors mt-1">
         连接
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 模型管理模态框 ─────────────────────────────────────────────────────── -->
+<div id="model-modal" class="modal-overlay hidden">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[85vh] flex flex-col">
+    <div class="flex items-center justify-between p-5 border-b border-slate-100 shrink-0">
+      <h3 class="font-bold text-slate-800">模型管理</h3>
+      <button onclick="closeModelModal()" class="text-slate-400 hover:text-slate-600">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+
+    <div class="overflow-y-auto p-5 flex flex-col gap-5 custom-scrollbar">
+      <!-- 已保存模型 -->
+      <div class="flex flex-col gap-2">
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">已保存模型</h4>
+        <div id="model-list" class="flex flex-col gap-2"></div>
+      </div>
+
+      <!-- 添加模型 -->
+      <div class="flex flex-col gap-3 border-t border-slate-100 pt-4">
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">添加模型</h4>
+        <div>
+          <label class="text-xs font-medium text-slate-600 mb-1 block">名称</label>
+          <input id="m-name" type="text" placeholder="如: DeepSeek / Kimi / 本地Ollama"
+            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600 mb-1 block">API 地址（OpenAI 兼容）</label>
+          <input id="m-url" type="text" placeholder="https://api.deepseek.com/v1"
+            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600 mb-1 block">API Key <span class="text-slate-400 font-normal">（本地服务可留空）</span></label>
+          <input id="m-key" type="password" placeholder="sk-..."
+            class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-purple-200 outline-none"/>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600 mb-1 block">模型 ID</label>
+          <div class="flex gap-2">
+            <input id="m-model" type="text" placeholder="deepseek-chat"
+              class="flex-1 min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-purple-200 outline-none"/>
+            <button id="m-fetch-btn" onclick="fetchModelList()"
+              class="shrink-0 rounded-lg border border-purple-200 px-3 text-xs font-medium text-purple-700 hover:bg-purple-50 transition-colors disabled:opacity-50">
+              读取模型列表
+            </button>
+          </div>
+          <select id="m-model-select" onchange="document.getElementById('m-model').value = this.value"
+            class="hidden mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono bg-white"></select>
+        </div>
+        <div id="model-form-msg" class="hidden text-xs rounded-lg px-3 py-2"></div>
+        <div class="flex gap-2">
+          <button onclick="testModelForm()"
+            class="flex-1 rounded-xl border border-slate-200 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">测试连接</button>
+          <button onclick="addModel()"
+            class="flex-1 rounded-xl bg-purple-700 py-2.5 text-sm font-bold text-white hover:bg-purple-600 transition-colors">添加</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>

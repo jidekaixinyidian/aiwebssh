@@ -1,21 +1,31 @@
 // ─── 全局状态 ─────────────────────────────────────────────────────────────────
-const API = 'http://localhost:5000/api';
+const API = '/api';
 let socket = null;
 let term = null;
 let fitAddon = null;
 let isConnected = false;
 let currentServer = null;
-let connectStartTime = null;
+let currentSid = null;
+let aiBusy = false;
 
 // ─── 初始化 ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initTerminal();
   initSocket();
   loadServers();
+  loadModels();
 
   // AI输入回车
   document.getElementById('ai-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') sendAI();
+  });
+
+  // 点击遮罩关闭模态框
+  document.getElementById('connect-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeConnectModal();
+  });
+  document.getElementById('model-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModelModal();
   });
 });
 
@@ -83,10 +93,15 @@ function initTerminal() {
 
 // ─── Socket.IO 初始化 ─────────────────────────────────────────────────────────
 function initSocket() {
-  socket = io('http://localhost:5000', { transports: ['websocket', 'polling'] });
+  socket = io({ transports: ['websocket', 'polling'] });
 
   socket.on('connect', () => {
-    console.log('[WS] 已连接到后端, sid:', socket.id);
+    console.log('[WS] 已连接到后端');
+  });
+
+  // 服务端回传的权威sid（用于AI上下文关联，勿用客户端socket.id）
+  socket.on('connected', data => {
+    currentSid = data.sid;
   });
 
   socket.on('disconnect', () => {
@@ -147,6 +162,8 @@ function renderServerList(servers) {
   servers.forEach(s => {
     const item = document.createElement('div');
     item.id = `server-item-${s.id}`;
+    item.dataset.host = s.host;
+    item.dataset.username = s.username;
     item.className = 'flex items-center gap-1 rounded-lg group hover:bg-purple-50 transition-colors pr-1';
 
     const btn = document.createElement('button');
@@ -188,20 +205,14 @@ function renderPresetList(servers) {
       </div>
     `;
     btn.onclick = () => {
-      // 直接用预设服务器ID连接，密码由后端处理
       closeConnectModal();
-      term.clear();
-      term.writeln(`\x1b[90m正在连接 ${s.username}@${s.host}:${s.port} ...\x1b[0m`);
-      currentServer = s;
-      connectStartTime = Date.now();
-      const { cols, rows } = term;
-      socket.emit('ssh_connect', { host: s.host, port: s.port, username: s.username, password: '', serverId: s.id, cols, rows });
+      quickConnectServer(s);
     };
     list.appendChild(btn);
   });
 }
 
-// 快速连接（左侧点击，密码由后端处理）
+// 快速连接（左侧点击/预设列表，密码由后端处理）
 function quickConnectServer(s) {
   if (isConnected) {
     if (!confirm(`当前已连接，确定切换到 ${s.name}？`)) return;
@@ -210,7 +221,6 @@ function quickConnectServer(s) {
   term.clear();
   term.writeln(`\x1b[90m正在连接 ${s.username}@${s.host}:${s.port} ...\x1b[0m`);
   currentServer = s;
-  connectStartTime = Date.now();
   const { cols, rows } = term;
   socket.emit('ssh_connect', { host: s.host, port: s.port, username: s.username, password: '', serverId: s.id, cols, rows });
 }
@@ -288,7 +298,6 @@ function startSSHConnect(params) {
   term.writeln(`\x1b[90m正在连接 ${params.username}@${params.host}:${params.port} ...\x1b[0m`);
 
   currentServer = params;
-  connectStartTime = Date.now();
 
   const { cols, rows } = term;
   socket.emit('ssh_connect', { ...params, cols, rows });
@@ -315,10 +324,6 @@ function setConnected() {
     document.getElementById('footer-host').textContent = title;
   }
 
-  // 延迟显示
-  const latency = connectStartTime ? `${Date.now() - connectStartTime}ms` : '';
-  document.getElementById('footer-latency').textContent = latency ? `延迟: ${latency}` : '';
-
   // 断开按钮
   document.getElementById('btn-disconnect').classList.remove('hidden');
   document.getElementById('btn-disconnect').classList.add('flex');
@@ -337,7 +342,6 @@ function setDisconnected(reason) {
   document.getElementById('status-text').textContent = '未连接';
   document.getElementById('terminal-title').textContent = '未连接';
   document.getElementById('footer-host').textContent = '未连接';
-  document.getElementById('footer-latency').textContent = '';
 
   document.getElementById('btn-disconnect').classList.add('hidden');
   document.getElementById('btn-disconnect').classList.remove('flex');
@@ -351,12 +355,7 @@ function setDisconnected(reason) {
 
 function highlightServer(host) {
   document.querySelectorAll('#server-list > div').forEach(item => {
-    item.classList.remove('bg-purple-100');
-  });
-  if (!host) return;
-  document.querySelectorAll('#server-list > div').forEach(item => {
-    const text = item.querySelector('p')?.textContent || '';
-    if (text.includes(host)) item.classList.add('bg-purple-100');
+    item.classList.toggle('bg-purple-100', !!host && item.dataset.host === host);
   });
 }
 
@@ -406,13 +405,6 @@ function hideConnectError() {
   document.getElementById('connect-error').classList.add('hidden');
 }
 
-// 点击遮罩关闭
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('connect-modal').addEventListener('click', e => {
-    if (e.target === e.currentTarget) closeConnectModal();
-  });
-});
-
 // ─── AI 助手 ──────────────────────────────────────────────────────────────────
 function quickAI(msg) {
   document.getElementById('ai-input').value = msg;
@@ -422,7 +414,7 @@ function quickAI(msg) {
 async function sendAI() {
   const input = document.getElementById('ai-input');
   const msg = input.value.trim();
-  if (!msg) return;
+  if (!msg || aiBusy) return;
   input.value = '';
 
   addAIMsg(msg, 'user');
@@ -432,26 +424,31 @@ async function sendAI() {
     return;
   }
 
+  // 请求期间禁用输入，防止并发导致命令乱序写入终端
+  aiBusy = true;
+  const inputEl = document.getElementById('ai-input');
+  const sendBtn = document.getElementById('ai-send-btn');
+  inputEl.disabled = true;
+  sendBtn.disabled = true;
+
   // 显示加载状态
   const loadingId = addAIMsg('解析中...', 'loading');
 
   try {
+    const modelId = document.getElementById('model-select').value || null;
     const res = await fetch(`${API}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg })
+      body: JSON.stringify({ message: msg, model_id: modelId, sid: currentSid })
     });
+    if (res.status === 404) loadModels(); // 所选模型已被删除，刷新列表
 
     removeAIMsg(loadingId);
     const data = await res.json();
 
     if (data.success) {
-      addAIMsg(`命令: \`${data.parsed_command}\`\n${data.description || ''}`, 'assistant');
-      // 通过WebSocket发送命令到终端（追加换行执行）
-      if (socket && isConnected) {
-        socket.emit('terminal_input', { data: data.parsed_command + '\n' });
-        term.focus();
-      }
+      const via = data.model_name ? `\n— ${data.model_name}` : '';
+      addCommandCard(data.parsed_command, data.description || '', via);
     } else if (data.dangerous) {
       addAIMsg(`⚠️ 危险命令已拦截\n${data.message}`, 'warning');
     } else {
@@ -460,10 +457,310 @@ async function sendAI() {
   } catch (e) {
     removeAIMsg(loadingId);
     addAIMsg(`请求失败: ${e.message}`, 'error');
+  } finally {
+    aiBusy = false;
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
   }
 }
 
+// 命令确认卡片：执行/编辑/取消
+function addCommandCard(command, description, via = '') {
+  const chat = document.getElementById('ai-chat');
+  const card = document.createElement('div');
+  card.className = 'bg-slate-50 border border-slate-200 rounded-lg p-2.5';
+
+  const descHtml = description
+    ? `<p class="text-xs text-slate-500 leading-relaxed mb-2">${escHtml(description)}${escHtml(via)}</p>`
+    : '';
+
+  card.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">建议命令</span>
+      <span class="text-[10px] text-slate-400">执行前可编辑</span>
+    </div>
+    ${descHtml}
+    <div class="flex items-center gap-1.5">
+      <input type="text"
+        class="cmd-input flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] text-slate-800 focus:ring-2 focus:ring-purple-200 outline-none"/>
+      <button class="run-btn shrink-0 rounded-lg bg-purple-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-purple-600 transition-colors">执行</button>
+      <button class="edit-btn shrink-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-500 hover:bg-slate-100 transition-colors">编辑</button>
+      <button class="cancel-btn shrink-0 h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors" title="取消">
+        <span class="material-symbols-outlined text-sm">close</span>
+      </button>
+    </div>
+  `;
+
+  const input = card.querySelector('.cmd-input');
+  input.value = command;
+
+  const finish = (state, finalCmd = '') => {
+    card.querySelectorAll('button').forEach(b => b.remove());
+    input.readOnly = true;
+    input.disabled = true;
+    if (state === 'run') {
+      input.className = 'cmd-input flex-1 min-w-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 font-mono text-[11px] text-emerald-800 outline-none';
+    } else {
+      input.className = 'cmd-input flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] text-slate-400 line-through outline-none';
+    }
+    card.dataset.state = state;
+    card.dataset.command = finalCmd;
+  };
+
+  const runCmd = (cmd) => {
+    if (!cmd.trim()) return;
+    if (socket && isConnected) {
+      socket.emit('terminal_input', { data: cmd + '\n' });
+      term.focus();
+    }
+    finish('run', cmd);
+  };
+
+  card.querySelector('.run-btn').onclick = () => runCmd(input.value.trim());
+  card.querySelector('.edit-btn').onclick = () => {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !input.disabled) runCmd(input.value.trim());
+  });
+  card.querySelector('.cancel-btn').onclick = () => finish('cancel', '');
+
+  chat.appendChild(card);
+  chat.scrollTop = chat.scrollHeight;
+}
+
 let aiMsgCounter = 0;
+
+// ─── 模型管理 ─────────────────────────────────────────────────────────────────
+let modelListCache = [];
+
+async function loadModels() {
+  try {
+    const res = await fetch(`${API}/models`);
+    const data = await res.json();
+    modelListCache = data.models || [];
+    renderModelSelect();
+    renderModelList();
+  } catch (e) {
+    console.error('[API] 加载模型列表失败:', e);
+  }
+}
+
+function renderModelSelect() {
+  const sel = document.getElementById('model-select');
+  const prev = sel.value;
+  sel.innerHTML = '';
+
+  if (!modelListCache.length) {
+    sel.innerHTML = '<option value="">暂无模型</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  modelListCache.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.is_default ? `${m.name} ·默认` : m.name;
+    sel.appendChild(opt);
+  });
+  const current = modelListCache.find(m => m.id === prev);
+  const def = modelListCache.find(m => m.is_default) || modelListCache[0];
+  sel.value = (current || def).id;
+}
+
+function renderModelList() {
+  const list = document.getElementById('model-list');
+  list.innerHTML = '';
+
+  if (!modelListCache.length) {
+    list.innerHTML = '<p class="text-xs text-slate-400 px-1 py-2">暂无模型，请在下方添加</p>';
+    return;
+  }
+
+  modelListCache.forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'flex items-center gap-1 rounded-xl border border-slate-200 p-3 group';
+    item.innerHTML = `
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+          ${escHtml(m.name)}
+          ${m.is_default ? '<span class="text-[10px] bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">默认</span>' : ''}
+        </p>
+        <p class="text-[10px] text-slate-400 truncate font-mono">${escHtml(m.model)} @ ${escHtml(m.base_url.replace(/^https?:\/\//, ''))}</p>
+      </div>
+    `;
+
+    const mkBtn = (icon, title, onclick, hoverColor = 'hover:text-purple-700') => {
+      const b = document.createElement('button');
+      b.title = title;
+      b.className = `shrink-0 h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 ${hoverColor} hover:bg-slate-50 transition-colors`;
+      b.innerHTML = `<span class="material-symbols-outlined text-base">${icon}</span>`;
+      b.onclick = onclick;
+      return b;
+    };
+
+    if (!m.is_default) {
+      item.appendChild(mkBtn('star', '设为默认', () => setDefaultModel(m.id)));
+    }
+    item.appendChild(mkBtn('network_check', '测试连接', () => testSavedModel(m)));
+    item.appendChild(mkBtn('delete', '删除', () => {
+      if (confirm(`确定删除模型 "${m.name}"？`)) deleteModel(m.id);
+    }, 'hover:text-red-500'));
+
+    list.appendChild(item);
+  });
+}
+
+function modelFormMsg(msg, type) {
+  const el = document.getElementById('model-form-msg');
+  if (!msg) { el.classList.add('hidden'); return; }
+  el.textContent = msg;
+  el.className = `text-xs rounded-lg px-3 py-2 ${
+    type === 'error' ? 'text-red-600 bg-red-50'
+    : type === 'success' ? 'text-emerald-600 bg-emerald-50'
+    : 'text-slate-600 bg-slate-50'
+  }`;
+}
+
+function readModelForm() {
+  return {
+    name: document.getElementById('m-name').value.trim(),
+    base_url: document.getElementById('m-url').value.trim(),
+    api_key: document.getElementById('m-key').value.trim(),
+    model: document.getElementById('m-model').value.trim()
+  };
+}
+
+async function fetchModelList() {
+  const { base_url, api_key } = readModelForm();
+  if (!base_url) { modelFormMsg('请先填写 API 地址', 'error'); return; }
+
+  const btn = document.getElementById('m-fetch-btn');
+  btn.textContent = '读取中...'; btn.disabled = true;
+  modelFormMsg('正在读取模型列表...', '');
+
+  try {
+    const res = await fetch(`${API}/models/probe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url, api_key })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || '读取失败');
+
+    const sel = document.getElementById('m-model-select');
+    sel.innerHTML = '';
+    data.models.forEach(id => {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = id;
+      sel.appendChild(o);
+    });
+    sel.classList.remove('hidden');
+
+    const input = document.getElementById('m-model');
+    const cur = input.value.trim();
+    input.value = data.models.includes(cur) ? cur : (data.models[0] || cur);
+    sel.value = input.value;
+
+    modelFormMsg(`读取到 ${data.models.length} 个模型，可从下拉框切换`, 'success');
+  } catch (e) {
+    modelFormMsg(`读取失败: ${e.message}`, 'error');
+  } finally {
+    btn.textContent = '读取模型列表'; btn.disabled = false;
+  }
+}
+
+async function testModelForm() {
+  const f = readModelForm();
+  if (!f.base_url || !f.model) { modelFormMsg('请填写 API 地址和模型 ID', 'error'); return; }
+  modelFormMsg('测试中...', '');
+
+  try {
+    const res = await fetch(`${API}/models/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(f)
+    });
+    const data = await res.json();
+    modelFormMsg(data.message, data.success ? 'success' : 'error');
+  } catch (e) {
+    modelFormMsg(`测试失败: ${e.message}`, 'error');
+  }
+}
+
+async function testSavedModel(m) {
+  modelFormMsg(`正在测试 "${m.name}" ...`, '');
+  try {
+    const res = await fetch(`${API}/models/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: m.id })
+    });
+    const data = await res.json();
+    modelFormMsg(`${m.name}: ${data.message}`, data.success ? 'success' : 'error');
+  } catch (e) {
+    modelFormMsg(`测试失败: ${e.message}`, 'error');
+  }
+}
+
+async function addModel() {
+  const f = readModelForm();
+  if (!f.name || !f.base_url || !f.model) {
+    modelFormMsg('名称、API 地址、模型 ID 不能为空', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(f)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || '添加失败');
+
+    ['m-name', 'm-url', 'm-key', 'm-model'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('m-model-select').classList.add('hidden');
+    modelFormMsg(`模型 "${data.model.name}" 已添加`, 'success');
+    loadModels();
+  } catch (e) {
+    modelFormMsg(e.message, 'error');
+  }
+}
+
+async function deleteModel(id) {
+  try {
+    const res = await fetch(`${API}/models/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) loadModels();
+  } catch (e) {
+    console.error('[API] 删除模型失败:', e);
+  }
+}
+
+async function setDefaultModel(id) {
+  try {
+    const res = await fetch(`${API}/models/${id}/default`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) loadModels();
+  } catch (e) {
+    console.error('[API] 设置默认模型失败:', e);
+  }
+}
+
+function openModelModal() {
+  document.getElementById('model-modal').classList.remove('hidden');
+  modelFormMsg('');
+  loadModels();
+}
+
+function closeModelModal() {
+  document.getElementById('model-modal').classList.add('hidden');
+}
 function addAIMsg(text, type = 'assistant') {
   const chat = document.getElementById('ai-chat');
   const id = `ai-msg-${++aiMsgCounter}`;
